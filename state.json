@@ -1,10 +1,10 @@
 {
-  "day": "2026-11-21",
+  "day": "2026-11-22",
   "wallets": {
     "0x25cc275cfe3cce1700e816e00d4cd1f60872038a": {
-      "last_block": 116361076,
-      "total_count": 44,
-      "total_volume": 113701.03,
+      "last_block": 120065189,
+      "total_count": 54,
+      "total_volume": 161869.45,
       "since": "23/10/2026",
       "day_count": 0,
       "day_volume": 0.0,
@@ -12,7 +12,7 @@
       "rescan_done": 108361076
     },
     "0xfa68ac3fd61396f478135d0018eb19c9b9ccd1dc": {
-      "last_block": 113000000,
+      "last_block": 120065245,
       "total_count": 5,
       "total_volume": 11927.14,
       "since": "10/11/2026",
@@ -28,6 +28,9 @@
     "0x2e0847e8910a9732eb3fb1bb4b70a580adad4fe3": "BeaconProxy",
     "0xffc65b3bef0544b2dbfa40deea02c61f60397958": "MetricOmmPoolLiquidityAdder",
     "0xd0601ce157db5bdc3162bbac2a2c8af5320d9eec": "BeaconProxy",
-    "0x6131b5fae19ea4f9d964eac0408e4408b66337b5": "MetaAggregationRouterV2"
+    "0x6131b5fae19ea4f9d964eac0408e4408b66337b5": "MetaAggregationRouterV2",
+    "0x2eb3ec0c7e94f83af3458de5f907a9910932a6b5": "MetricOmmPool",
+    "0xbbb6c29bcc3a1028a2b54310df73f4f7a3bcb373": "BeaconProxy",
+    "0x60f93734a7555ab6daa272afa0c5fedfc4062fba": "Permit2Proxy"
   }
 }
