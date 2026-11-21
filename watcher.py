@@ -1,4 +1,4 @@
-"""Metric Watcher v1.3.2 - bao Telegram moi khi cac vi swap tren Metric (Robinhood Chain).
+"""Metric Watcher v1.3.3 - bao Telegram moi khi cac vi swap tren Metric (Robinhood Chain).
 
 Cach nhan dien lenh Metric (v1.3):
   - Giao dich gui toi router Metric da biet (cu 0x3c6c..., moi 0x0220...), HOAC
@@ -50,7 +50,7 @@ SUMMARY_MIN = 5        # tu 5 lenh moi tro len trong 1 lan chay -> gop vao 1 tin
 
 
 def http_get_json(url, timeout=25):
-    req = urllib.request.Request(url, headers={"User-Agent": "metric-watcher/1.3.2"})
+    req = urllib.request.Request(url, headers={"User-Agent": "metric-watcher/1.3.3"})
     with urllib.request.urlopen(req, timeout=timeout) as r:
         return json.loads(r.read().decode())
 
@@ -253,18 +253,20 @@ def find_swaps(wallet, start_block, cache):
                                           "toks": [], "ints": []})
         return e
 
-    for t in txs:
-        if int(t["blockNumber"]) < start_block:
-            continue
-        g(t["hash"], t["blockNumber"], t.get("timeStamp"))["tx"] = t
-    for t in toks:
-        if int(t["blockNumber"]) < start_block:
-            continue
-        g(t["hash"], t["blockNumber"], t.get("timeStamp"))["toks"].append(t)
-    for t in ints:
-        if int(t["blockNumber"]) < start_block:
-            continue
-        g(t["hash"], t["blockNumber"], t.get("timeStamp"))["ints"].append(t)
+    def txhash(t):
+        # giao dich noi bo tren Blockscout dung "transactionHash" thay cho "hash"
+        return t.get("hash") or t.get("transactionHash") or ""
+
+    for kind, items in (("tx", txs), ("toks", toks), ("ints", ints)):
+        for t in items:
+            h = txhash(t)
+            if not h or int(t.get("blockNumber") or 0) < start_block:
+                continue
+            e = g(h, t["blockNumber"], t.get("timeStamp"))
+            if kind == "tx":
+                e["tx"] = t
+            else:
+                e[kind].append(t)
 
     swaps = []
     for h, e in sorted(groups.items(), key=lambda kv: kv[1]["block"]):
