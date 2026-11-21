@@ -1,4 +1,4 @@
-"""Metric Watcher v1.3.1 - bao Telegram moi khi cac vi swap tren Metric (Robinhood Chain).
+"""Metric Watcher v1.3.2 - bao Telegram moi khi cac vi swap tren Metric (Robinhood Chain).
 
 Cach nhan dien lenh Metric (v1.3):
   - Giao dich gui toi router Metric da biet (cu 0x3c6c..., moi 0x0220...), HOAC
@@ -43,12 +43,15 @@ CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
 API_BASES = [
     f"https://api.blockscout.com/{CHAIN_ID}/api",
     "https://api.blockscout.com/v2/api",
+    "https://robinhoodchain.blockscout.com/api",  # du phong (khong can key)
 ]
+CHUNK = 1_000_000      # quet lich su theo tung doan ~1 trieu block (~1 ngay)
+SUMMARY_MIN = 5        # tu 5 lenh moi tro len trong 1 lan chay -> gop vao 1 tin
 
 
-def http_get_json(url):
-    req = urllib.request.Request(url, headers={"User-Agent": "metric-watcher/1.3.1"})
-    with urllib.request.urlopen(req, timeout=15) as r:
+def http_get_json(url, timeout=25):
+    req = urllib.request.Request(url, headers={"User-Agent": "metric-watcher/1.3.2"})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
         return json.loads(r.read().decode())
 
 
@@ -56,21 +59,23 @@ def api_raw(params):
     """Goi API Blockscout (kieu Etherscan). Tra ve truong 'result' (bat ky kieu)."""
     errors = []
     for base in API_BASES:
-        p = dict(params, apikey=API_KEY)
+        p = dict(params)
+        if "api.blockscout.com" in base:
+            p["apikey"] = API_KEY
         if "/v2/" in base:
             p["chainid"] = CHAIN_ID
         url = base + "?" + urllib.parse.urlencode(p)
         try:
             data = http_get_json(url)
-        except Exception as e:  # loi mang
-            errors.append(f"{base}: {e}")
+        except Exception as e:  # loi mang / het gio
+            errors.append(f"{base.split('/')[2]}: {e}")
             continue
         result = data.get("result")
         if result not in (None, "") and not (isinstance(result, str) and "error" in result.lower()):
             return result
         if isinstance(result, list):
             return result
-        errors.append(f"{base}: {data.get('message')} {result}")
+        errors.append(f"{base.split('/')[2]}: {data.get('message')} {str(result)[:100]}")
     raise RuntimeError("API loi: " + " | ".join(errors))
 
 
@@ -183,6 +188,16 @@ def block_at(time_str):
     return int(res)
 
 
+def head_block():
+    """So block moi nhat cua chain (None neu khong lay duoc)."""
+    try:
+        res = api_raw({"module": "block", "action": "eth_block_number"})
+        return int(res, 16) if isinstance(res, str) and res.startswith("0x") else int(res)
+    except Exception as e:
+        print("  khong lay duoc block moi nhat:", e)
+        return None
+
+
 def new_wallet_state(wallet, today_str):
     """Vi moi them vao: bat dau tu $0, bo qua lich su (lay block giao dich gan nhat lam moc)."""
     latest = api({"module": "account", "action": "txlist", "address": wallet,
@@ -193,16 +208,42 @@ def new_wallet_state(wallet, today_str):
             "since": today_str, "day_count": 0, "day_volume": 0.0, "started": False}
 
 
+def fetch_range(wallet, start_block):
+    """Lay txlist/tokentx/internal tu start_block. Khoang dai -> chia doan.
+    Tra ve (txs, toks, ints, end_ok, full): end_ok = block cuoi da lay xong."""
+    head = head_block()
+    if head is None or head - start_block <= CHUNK:
+        segs = [(start_block, 999999999)]
+    else:
+        segs = [(a, min(a + CHUNK - 1, head)) for a in range(start_block, head + 1, CHUNK)]
+        segs[-1] = (segs[-1][0], 999999999)
+        print(f"  chia {len(segs)} doan tu block {start_block}")
+    txs, toks, ints = [], [], []
+    end_ok = start_block - 1
+    for a, b in segs:
+        rng = {"address": wallet, "startblock": a, "endblock": b,
+               "sort": "asc", "page": 1, "offset": 1000}
+        try:
+            t1 = api(dict(rng, module="account", action="txlist"))
+            t2 = api(dict(rng, module="account", action="tokentx"))
+            try:
+                t3 = api(dict(rng, module="account", action="txlistinternal"))
+            except Exception:
+                t3 = []
+        except Exception as e:
+            print(f"  LOI lay doan {a}-{b}:", e)
+            return txs, toks, ints, end_ok, False
+        txs += t1
+        toks += t2
+        ints += t3
+        end_ok = b if b != 999999999 else max(
+            [int(t["blockNumber"]) for t in t1 + t2 + t3] + [head or 0, a - 1])
+    return txs, toks, ints, end_ok, True
+
+
 def find_swaps(wallet, start_block, cache):
-    """Tim cac lenh Metric moi cua vi. Tra ve (danh sach lenh, block lon nhat da xem)."""
-    rng = {"address": wallet, "startblock": start_block, "endblock": 999999999,
-           "sort": "asc", "page": 1, "offset": 1000}
-    txs = api(dict(rng, module="account", action="txlist"))
-    toks = api(dict(rng, module="account", action="tokentx"))
-    try:
-        ints = api(dict(rng, module="account", action="txlistinternal"))
-    except Exception:
-        ints = []
+    """Tim cac lenh Metric moi cua vi. Tra ve (danh sach lenh, block da xem xong, full)."""
+    txs, toks, ints, end_ok, full = fetch_range(wallet, start_block)
 
     groups = {}
     max_block = start_block - 1
@@ -260,7 +301,11 @@ def find_swaps(wallet, start_block, cache):
         if not sold and not got:
             continue  # khong co tien di chuyen -> khong phai swap
         swaps.append({"hash": h, "time": e["time"], "sold": sold, "got": got, "usdg": usdg})
-    return swaps, max_block
+    if not full:
+        max_block = end_ok  # chi ghi nhan phan da lay xong, lan sau lay tiep
+    else:
+        max_block = max(max_block, end_ok)
+    return swaps, max_block, full
 
 
 def check_wallet(cfg, ws, cache):
@@ -292,12 +337,12 @@ def check_wallet(cfg, ws, cache):
         )
         ws["started"] = True
 
-    swaps, max_block = find_swaps(wallet, ws["last_block"] + 1, cache)
+    swaps, max_block, full = find_swaps(wallet, ws["last_block"] + 1, cache)
     print(f"[{cfg['name']}] {len(swaps)} lenh Metric moi")
     today = datetime.now(KST).strftime("%Y-%m-%d")
 
     # Quet bu nhieu lenh -> gop vao 1 tin (tranh spam)
-    if rescanning and len(swaps) > 1:
+    if len(swaps) >= SUMMARY_MIN or (rescanning and len(swaps) > 1):
         lines = [f"🔁 <b>Quét bù lệnh Metric · {name}</b>"]
         for s in swaps:
             usdg = s["usdg"]
@@ -336,7 +381,10 @@ def check_wallet(cfg, ws, cache):
         lines.append(f'🔗 <a href="{EXPLORER_TX}{s["hash"]}">Xem giao dịch</a>')
         send_telegram("\n".join(lines))
         print("Da bao:", s["hash"])
-    ws["last_block"] = max(ws["last_block"], max_block, seen_before)
+    if full:
+        ws["last_block"] = max(ws["last_block"], max_block, seen_before)
+    else:
+        ws["last_block"] = max(ws["last_block"], max_block)  # lay duoc toi dau ghi toi do
 
 
 def main():
