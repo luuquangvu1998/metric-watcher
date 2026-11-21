@@ -2,23 +2,24 @@
   "day": "2026-11-21",
   "wallets": {
     "0x25cc275cfe3cce1700e816e00d4cd1f60872038a": {
-      "last_block": 119050073,
+      "last_block": 108361076,
       "total_count": 40,
       "total_volume": 102969.49,
       "since": "23/10/2026",
       "day_count": 0,
       "day_volume": 0.0,
-      "started": true
+      "started": true,
+      "rescan_done": 108361076
     },
     "0xfa68ac3fd61396f478135d0018eb19c9b9ccd1dc": {
-      "last_block": 110795602,
+      "last_block": 110000000,
       "total_count": 0,
       "total_volume": 0.0,
       "since": "10/11/2026",
       "day_count": 0,
       "day_volume": 0.0,
       "started": true,
-      "rescan_done": "2026-11-10 19:00"
+      "rescan_done": 110000000
     }
   },
   "contracts": {}
