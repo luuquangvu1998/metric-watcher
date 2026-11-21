@@ -1,9 +1,9 @@
-"""Metric Watcher v1.2 - bao Telegram moi khi cac vi swap tren Metric (Robinhood Chain).
+"""Metric Watcher v1.3.1 - bao Telegram moi khi cac vi swap tren Metric (Robinhood Chain).
 
-Cach nhan dien lenh Metric (v1.2):
-  - Giao dich gui toi router Metric da biet, HOAC
-  - Vi gui/nhan token truc tiep voi mot pool cua Metric (hop dong ten "Metric...")
-  => bat duoc ca khi Metric doi router moi, hoac vi dung smart wallet / lenh gasless.
+Cach nhan dien lenh Metric (v1.3):
+  - Giao dich gui toi router Metric da biet (cu 0x3c6c..., moi 0x0220...), HOAC
+  - Gui toi hop dong co ten chua ca "Metric" va "Router" (tu bat router moi neu Metric doi lan nua)
+  - Lenh them/rut thanh khoan (LP) va lenh qua KyberSwap... KHONG tinh.
 """
 import html
 import json
@@ -14,16 +14,20 @@ import urllib.request
 from datetime import datetime, timedelta, timezone
 
 # ===== CAU HINH: DANH SACH VI (them vi moi = them 1 dong) =====
-# "rescan_from" (khong bat buoc): quet lai 1 lan tu thoi diem nay (gio Han)
+# "rescan_from" (khong bat buoc): quet lai 1 lan tu so block nay (so nguyen)
+#                hoac tu thoi diem nay (chuoi 'YYYY-MM-DD HH:MM', gio Han)
+# "rescan_base"  (khong bat buoc): [so lenh, volume] dung ngay truoc block quet lai
+#                -> dat lai tong truoc khi quet, khong bao gio bi cong trung
 WALLETS = [
-    {"address": "0x25CC275CFE3Cce1700E816e00d4CD1f60872038A", "name": "Ví 038A"},
+    {"address": "0x25CC275CFE3Cce1700E816e00d4CD1f60872038A", "name": "Ví 038A",
+     "rescan_from": 108361076, "rescan_base": [40, 102969.49]},
     {"address": "0xfa68aC3Fd61396f478135d0018eb19c9b9ccd1dC", "name": "ví chính",
-     "rescan_from": "2026-11-10 19:00"},
+     "rescan_from": 110000000, "rescan_base": [0, 0.0]},
 ]
-# Router / pool Metric da biet (them dia chi vao day neu can)
+# Router Metric da biet (them dia chi vao day neu can)
 KNOWN_METRIC = {
-    "0x3c6c4fc94f1493b9d76c5e4c4cdedb444d3cc0a2",  # Metric router
-    "0x1e8fc442ad3606719f7016ded6c17b56c3ca7386",  # MetricOmmPool WETH/USDG
+    "0x3c6c4fc94f1493b9d76c5e4c4cdedb444d3cc0a2",  # Metric router cu (den ~10/11/2026)
+    "0x02201e6f13c41506c7bb635d7543f98826229ab7",  # MetricOmmSimpleRouter (tu ~10/11/2026)
 }
 CHAIN_ID = "4663"  # Robinhood Chain
 EXPLORER_TX = "https://robin.etherscan.io/tx/"
@@ -43,8 +47,8 @@ API_BASES = [
 
 
 def http_get_json(url):
-    req = urllib.request.Request(url, headers={"User-Agent": "metric-watcher/1.2"})
-    with urllib.request.urlopen(req, timeout=30) as r:
+    req = urllib.request.Request(url, headers={"User-Agent": "metric-watcher/1.3.1"})
+    with urllib.request.urlopen(req, timeout=15) as r:
         return json.loads(r.read().decode())
 
 
@@ -143,7 +147,7 @@ def migrate(state):
     return new
 
 
-# ---------- Nhan dien hop dong Metric (co nho tam trong state) ----------
+# ---------- Nhan dien router Metric (co nho tam ten hop dong trong state) ----------
 def is_metric(addr, cache):
     addr = addr.lower()
     if addr in KNOWN_METRIC:
@@ -162,10 +166,11 @@ def is_metric(addr, cache):
                 raise RuntimeError(str(res))
         except Exception as e:
             print("  khong tra duoc ten hop dong", addr, e)
-            return False  # khong luu cache, lan sau thu lai
+            name = ""  # ghi nho luon de lan sau khong tra lai (tranh chay cham)
         cache[addr] = name
         print(f"  hop dong {addr}: '{name}'")
-    return "metric" in cache[addr].lower()
+    n = cache[addr].lower()
+    return "metric" in n and "router" in n
 
 
 def block_at(time_str):
@@ -228,19 +233,12 @@ def find_swaps(wallet, start_block, cache):
             continue  # lenh loi
         tx_to = (tx or {}).get("to", "").lower()
         eth_out = int((tx or {}).get("value") or 0) if (tx or {}).get("from", "").lower() == wallet else 0
-        tok_out = [t for t in e["toks"] if t.get("from", "").lower() == wallet]
-        tok_in = [t for t in e["toks"] if t.get("to", "").lower() == wallet]
 
-        # Chi xet lenh vi co bo ra thu gi do (loai token rac duoc airdrop vao)
-        if not (tok_out or eth_out or tx_to in KNOWN_METRIC):
+        # Chi tinh lenh vi tu gui toi router Metric
+        if not tx_to or (tx or {}).get("from", "").lower() != wallet:
             continue
-        partners = {tx_to} if tx_to else set()
-        partners |= {t.get("to", "").lower() for t in tok_out}
-        partners |= {t.get("from", "").lower() for t in tok_in}
-        partners.discard("")
-        partners.discard(wallet)
-        hit = any(is_metric(p, cache) for p in partners)
-        print(f"  tx {h[:10]}… to={tx_to[:10] or '-'} doi tac={len(partners)} metric={hit}")
+        hit = is_metric(tx_to, cache)
+        print(f"  tx {h[:10]}… to={tx_to[:10]} metric={hit}")
         if not hit:
             continue
 
@@ -271,11 +269,15 @@ def check_wallet(cfg, ws, cache):
 
     # Quet lai 1 lan (neu co cau hinh rescan_from)
     seen_before = ws["last_block"]
+    rescanning = False
     rf = cfg.get("rescan_from")
     if rf and ws.get("rescan_done") != rf:
+        rescanning = True
         try:
-            b = block_at(rf)
+            b = int(rf) if isinstance(rf, int) else block_at(rf)
             ws["last_block"] = min(ws["last_block"], b)
+            if cfg.get("rescan_base"):
+                ws["total_count"], ws["total_volume"] = cfg["rescan_base"][0], float(cfg["rescan_base"][1])
             print(f"[{cfg['name']}] quet lai tu block {b} ({rf})")
         except Exception as e:
             print(f"[{cfg['name']}] KHONG quet lai duoc:", e)
@@ -293,6 +295,27 @@ def check_wallet(cfg, ws, cache):
     swaps, max_block = find_swaps(wallet, ws["last_block"] + 1, cache)
     print(f"[{cfg['name']}] {len(swaps)} lenh Metric moi")
     today = datetime.now(KST).strftime("%Y-%m-%d")
+
+    # Quet bu nhieu lenh -> gop vao 1 tin (tranh spam)
+    if rescanning and len(swaps) > 1:
+        lines = [f"🔁 <b>Quét bù lệnh Metric · {name}</b>"]
+        for s in swaps:
+            usdg = s["usdg"]
+            ws["total_count"] += 1
+            ws["total_volume"] = round(ws["total_volume"] + usdg, 2)
+            dt = datetime.fromtimestamp(s["time"], KST)
+            if dt.strftime("%Y-%m-%d") == today:
+                ws["day_count"] += 1
+                ws["day_volume"] = round(ws["day_volume"] + usdg, 2)
+            lines.append(f"• {dt.strftime('%d/%m %H:%M')} · {', '.join(s['sold']) or '—'} → "
+                         f"{', '.join(s['got']) or '—'}" + (f" · {money(usdg)}" if usdg else ""))
+        lines.append(f"\nĐã cộng thêm: {len(swaps)} lệnh · {money(sum(x['usdg'] for x in swaps))}")
+        lines.append(f"📈 Tổng từ {since}: {ws['total_count']} lệnh · {money(ws['total_volume'])}")
+        text = "\n".join(lines)
+        if len(text) > 4000:
+            text = "\n".join(lines[:1] + lines[-2:])
+        send_telegram(text)
+        swaps = []
 
     for s in swaps:
         usdg = s["usdg"]
