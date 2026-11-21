@@ -1,4 +1,10 @@
-"""Metric Watcher - bao Telegram moi khi cac vi swap tren Metric (Robinhood Chain)."""
+"""Metric Watcher v1.2 - bao Telegram moi khi cac vi swap tren Metric (Robinhood Chain).
+
+Cach nhan dien lenh Metric (v1.2):
+  - Giao dich gui toi router Metric da biet, HOAC
+  - Vi gui/nhan token truc tiep voi mot pool cua Metric (hop dong ten "Metric...")
+  => bat duoc ca khi Metric doi router moi, hoac vi dung smart wallet / lenh gasless.
+"""
 import html
 import json
 import os
@@ -8,15 +14,22 @@ import urllib.request
 from datetime import datetime, timedelta, timezone
 
 # ===== CAU HINH: DANH SACH VI (them vi moi = them 1 dong) =====
+# "rescan_from" (khong bat buoc): quet lai 1 lan tu thoi diem nay (gio Han)
 WALLETS = [
     {"address": "0x25CC275CFE3Cce1700E816e00d4CD1f60872038A", "name": "Ví 038A"},
-    {"address": "0xfa68aC3Fd61396f478135d0018eb19c9b9ccd1dC", "name": "ví chính"},
+    {"address": "0xfa68aC3Fd61396f478135d0018eb19c9b9ccd1dC", "name": "ví chính",
+     "rescan_from": "2026-11-10 19:00"},
 ]
-ROUTER = "0x3c6c4fC94f1493b9d76C5e4C4CdEdB444D3CC0A2".lower()  # Metric router
+# Router / pool Metric da biet (them dia chi vao day neu can)
+KNOWN_METRIC = {
+    "0x3c6c4fc94f1493b9d76c5e4c4cdedb444d3cc0a2",  # Metric router
+    "0x1e8fc442ad3606719f7016ded6c17b56c3ca7386",  # MetricOmmPool WETH/USDG
+}
 CHAIN_ID = "4663"  # Robinhood Chain
 EXPLORER_TX = "https://robin.etherscan.io/tx/"
 STATE_FILE = "state.json"
 KST = timezone(timedelta(hours=9))
+ZERO = "0x0000000000000000000000000000000000000000"
 # ==============================================================
 
 API_KEY = os.environ.get("BLOCKSCOUT_API_KEY", "").strip()
@@ -30,13 +43,13 @@ API_BASES = [
 
 
 def http_get_json(url):
-    req = urllib.request.Request(url, headers={"User-Agent": "metric-watcher/1.1"})
+    req = urllib.request.Request(url, headers={"User-Agent": "metric-watcher/1.2"})
     with urllib.request.urlopen(req, timeout=30) as r:
         return json.loads(r.read().decode())
 
 
-def api(params):
-    """Goi API Blockscout (kieu Etherscan). Tra ve list ket qua."""
+def api_raw(params):
+    """Goi API Blockscout (kieu Etherscan). Tra ve truong 'result' (bat ky kieu)."""
     errors = []
     for base in API_BASES:
         p = dict(params, apikey=API_KEY)
@@ -49,10 +62,22 @@ def api(params):
             errors.append(f"{base}: {e}")
             continue
         result = data.get("result")
+        if result not in (None, "") and not (isinstance(result, str) and "error" in result.lower()):
+            return result
         if isinstance(result, list):
             return result
         errors.append(f"{base}: {data.get('message')} {result}")
     raise RuntimeError("API loi: " + " | ".join(errors))
+
+
+def api(params):
+    """Nhu api_raw nhung luon tra ve list."""
+    result = api_raw(params)
+    if isinstance(result, list):
+        return result
+    if isinstance(result, str) and "no " in result.lower():
+        return []  # "No transactions found"
+    raise RuntimeError(f"API tra ve khong phai danh sach: {result}")
 
 
 def send_telegram(text):
@@ -118,37 +143,39 @@ def migrate(state):
     return new
 
 
-def describe_swap(wallet, tx):
-    """Doc chi tiet 1 giao dich: ban gi, nhan gi, volume bao nhieu."""
-    bn = tx["blockNumber"]
-    h = tx["hash"].lower()
-    rng = {"address": wallet, "startblock": bn, "endblock": bn, "sort": "asc"}
+# ---------- Nhan dien hop dong Metric (co nho tam trong state) ----------
+def is_metric(addr, cache):
+    addr = addr.lower()
+    if addr in KNOWN_METRIC:
+        return True
+    if addr == ZERO:
+        return False
+    if addr not in cache:
+        name = ""
+        try:
+            res = api_raw({"module": "contract", "action": "getsourcecode", "address": addr})
+            if isinstance(res, list) and res:
+                name = res[0].get("ContractName") or res[0].get("Name") or ""
+            elif isinstance(res, dict):
+                name = res.get("ContractName") or res.get("Name") or ""
+            elif not isinstance(res, list):
+                raise RuntimeError(str(res))
+        except Exception as e:
+            print("  khong tra duoc ten hop dong", addr, e)
+            return False  # khong luu cache, lan sau thu lai
+        cache[addr] = name
+        print(f"  hop dong {addr}: '{name}'")
+    return "metric" in cache[addr].lower()
 
-    transfers = [t for t in api(dict(rng, module="account", action="tokentx"))
-                 if t.get("hash", "").lower() == h]
-    try:
-        internals = [t for t in api(dict(rng, module="account", action="txlistinternal"))
-                     if t.get("hash", "").lower() == h]
-    except Exception:
-        internals = []
 
-    sold, got = [], []
-    usdg = 0.0
-    if int(tx.get("value") or 0) > 0:
-        sold.append(f"{fmt_amount(tx['value'], 18)} ETH")
-    for t in transfers:
-        sym = html.escape(t.get("tokenSymbol") or "?")
-        amt = fmt_amount(t["value"], t.get("tokenDecimal"))
-        if t.get("from", "").lower() == wallet:
-            sold.append(f"{amt} {sym}")
-        if t.get("to", "").lower() == wallet:
-            got.append(f"{amt} {sym}")
-        if "USDG" in sym.upper():
-            usdg = max(usdg, int(t["value"]) / 10 ** int(t.get("tokenDecimal") or 6))
-    for t in internals:
-        if t.get("to", "").lower() == wallet and int(t.get("value") or 0) > 0:
-            got.append(f"{fmt_amount(t['value'], 18)} ETH")
-    return sold, got, usdg
+def block_at(time_str):
+    """Lay so block tai 1 thoi diem (gio Han), dang 'YYYY-MM-DD HH:MM'."""
+    ts = int(datetime.strptime(time_str, "%Y-%m-%d %H:%M").replace(tzinfo=KST).timestamp())
+    res = api_raw({"module": "block", "action": "getblocknobytime",
+                   "timestamp": ts, "closest": "before"})
+    if isinstance(res, dict):
+        res = res.get("blockNumber")
+    return int(res)
 
 
 def new_wallet_state(wallet, today_str):
@@ -161,11 +188,100 @@ def new_wallet_state(wallet, today_str):
             "since": today_str, "day_count": 0, "day_volume": 0.0, "started": False}
 
 
-def check_wallet(cfg, ws):
+def find_swaps(wallet, start_block, cache):
+    """Tim cac lenh Metric moi cua vi. Tra ve (danh sach lenh, block lon nhat da xem)."""
+    rng = {"address": wallet, "startblock": start_block, "endblock": 999999999,
+           "sort": "asc", "page": 1, "offset": 1000}
+    txs = api(dict(rng, module="account", action="txlist"))
+    toks = api(dict(rng, module="account", action="tokentx"))
+    try:
+        ints = api(dict(rng, module="account", action="txlistinternal"))
+    except Exception:
+        ints = []
+
+    groups = {}
+    max_block = start_block - 1
+
+    def g(h, bn, ts):
+        e = groups.setdefault(h.lower(), {"block": int(bn), "time": int(ts or 0), "tx": None,
+                                          "toks": [], "ints": []})
+        return e
+
+    for t in txs:
+        if int(t["blockNumber"]) < start_block:
+            continue
+        g(t["hash"], t["blockNumber"], t.get("timeStamp"))["tx"] = t
+    for t in toks:
+        if int(t["blockNumber"]) < start_block:
+            continue
+        g(t["hash"], t["blockNumber"], t.get("timeStamp"))["toks"].append(t)
+    for t in ints:
+        if int(t["blockNumber"]) < start_block:
+            continue
+        g(t["hash"], t["blockNumber"], t.get("timeStamp"))["ints"].append(t)
+
+    swaps = []
+    for h, e in sorted(groups.items(), key=lambda kv: kv[1]["block"]):
+        max_block = max(max_block, e["block"])
+        tx = e["tx"]
+        if tx is not None and str(tx.get("isError", "0")) != "0":
+            continue  # lenh loi
+        tx_to = (tx or {}).get("to", "").lower()
+        eth_out = int((tx or {}).get("value") or 0) if (tx or {}).get("from", "").lower() == wallet else 0
+        tok_out = [t for t in e["toks"] if t.get("from", "").lower() == wallet]
+        tok_in = [t for t in e["toks"] if t.get("to", "").lower() == wallet]
+
+        # Chi xet lenh vi co bo ra thu gi do (loai token rac duoc airdrop vao)
+        if not (tok_out or eth_out or tx_to in KNOWN_METRIC):
+            continue
+        partners = {tx_to} if tx_to else set()
+        partners |= {t.get("to", "").lower() for t in tok_out}
+        partners |= {t.get("from", "").lower() for t in tok_in}
+        partners.discard("")
+        partners.discard(wallet)
+        hit = any(is_metric(p, cache) for p in partners)
+        print(f"  tx {h[:10]}… to={tx_to[:10] or '-'} doi tac={len(partners)} metric={hit}")
+        if not hit:
+            continue
+
+        sold, got, usdg = [], [], 0.0
+        if eth_out:
+            sold.append(f"{fmt_amount(eth_out, 18)} ETH")
+        for t in e["toks"]:
+            sym = html.escape(t.get("tokenSymbol") or "?")
+            amt = fmt_amount(t["value"], t.get("tokenDecimal"))
+            if t.get("from", "").lower() == wallet:
+                sold.append(f"{amt} {sym}")
+            if t.get("to", "").lower() == wallet:
+                got.append(f"{amt} {sym}")
+            if "USDG" in sym.upper():
+                usdg = max(usdg, int(t["value"]) / 10 ** int(t.get("tokenDecimal") or 6))
+        for t in e["ints"]:
+            if t.get("to", "").lower() == wallet and int(t.get("value") or 0) > 0:
+                got.append(f"{fmt_amount(t['value'], 18)} ETH")
+        if not sold and not got:
+            continue  # khong co tien di chuyen -> khong phai swap
+        swaps.append({"hash": h, "time": e["time"], "sold": sold, "got": got, "usdg": usdg})
+    return swaps, max_block
+
+
+def check_wallet(cfg, ws, cache):
     wallet = cfg["address"].lower()
     name = html.escape(cfg["name"])
-    since = ws["since"] or "lúc bật"
 
+    # Quet lai 1 lan (neu co cau hinh rescan_from)
+    seen_before = ws["last_block"]
+    rf = cfg.get("rescan_from")
+    if rf and ws.get("rescan_done") != rf:
+        try:
+            b = block_at(rf)
+            ws["last_block"] = min(ws["last_block"], b)
+            print(f"[{cfg['name']}] quet lai tu block {b} ({rf})")
+        except Exception as e:
+            print(f"[{cfg['name']}] KHONG quet lai duoc:", e)
+        ws["rescan_done"] = rf
+
+    since = ws["since"] or "lúc bật"
     if not ws["started"]:
         send_telegram(
             f"✅ <b>Đã bật theo dõi: {name}</b>\n"
@@ -174,37 +290,30 @@ def check_wallet(cfg, ws):
         )
         ws["started"] = True
 
-    txs = api({
-        "module": "account", "action": "txlist", "address": wallet,
-        "startblock": ws["last_block"] + 1, "endblock": 999999999,
-        "sort": "asc", "page": 1, "offset": 100,
-    })
-    txs = [t for t in txs if int(t["blockNumber"]) > ws["last_block"]]  # chong bao trung
-    txs.sort(key=lambda t: int(t["blockNumber"]))
-    print(f"[{cfg['name']}] {len(txs)} giao dich moi")
+    swaps, max_block = find_swaps(wallet, ws["last_block"] + 1, cache)
+    print(f"[{cfg['name']}] {len(swaps)} lenh Metric moi")
+    today = datetime.now(KST).strftime("%Y-%m-%d")
 
-    for tx in txs:
-        is_metric = (tx.get("to", "").lower() == ROUTER
-                     and str(tx.get("isError", "0")) == "0")
-        if is_metric:
-            sold, got, usdg = describe_swap(wallet, tx)
-            ws["total_count"] += 1
-            ws["total_volume"] = round(ws["total_volume"] + usdg, 2)
+    for s in swaps:
+        usdg = s["usdg"]
+        ws["total_count"] += 1
+        ws["total_volume"] = round(ws["total_volume"] + usdg, 2)
+        dt = datetime.fromtimestamp(s["time"], KST)
+        if dt.strftime("%Y-%m-%d") == today:
             ws["day_count"] += 1
             ws["day_volume"] = round(ws["day_volume"] + usdg, 2)
-            t = datetime.fromtimestamp(int(tx["timeStamp"]), KST).strftime("%d/%m %H:%M")
-            lines = [f"🔔 <b>Swap mới trên Metric · {name}</b>"]
-            lines.append("🔴 Bán: " + (", ".join(sold) or "—"))
-            lines.append("🟢 Nhận: " + (", ".join(got) or "—"))
-            if usdg:
-                lines.append(f"💵 Volume lệnh: {money(usdg)}")
-            lines.append(f"📊 Hôm nay: {ws['day_count']} lệnh · {money(ws['day_volume'])}")
-            lines.append(f"📈 Tổng từ {since}: {ws['total_count']} lệnh · {money(ws['total_volume'])}")
-            lines.append(f"⏰ {t} (giờ Hàn)")
-            lines.append(f'🔗 <a href="{EXPLORER_TX}{tx["hash"]}">Xem giao dịch</a>')
-            send_telegram("\n".join(lines))
-            print("Da bao:", tx["hash"])
-        ws["last_block"] = max(ws["last_block"], int(tx["blockNumber"]))
+        lines = [f"🔔 <b>Swap mới trên Metric · {name}</b>"]
+        lines.append("🔴 Bán: " + (", ".join(s["sold"]) or "—"))
+        lines.append("🟢 Nhận: " + (", ".join(s["got"]) or "—"))
+        if usdg:
+            lines.append(f"💵 Volume lệnh: {money(usdg)}")
+        lines.append(f"📊 Hôm nay: {ws['day_count']} lệnh · {money(ws['day_volume'])}")
+        lines.append(f"📈 Tổng từ {since}: {ws['total_count']} lệnh · {money(ws['total_volume'])}")
+        lines.append(f"⏰ {dt.strftime('%d/%m %H:%M')} (giờ Hàn)")
+        lines.append(f'🔗 <a href="{EXPLORER_TX}{s["hash"]}">Xem giao dịch</a>')
+        send_telegram("\n".join(lines))
+        print("Da bao:", s["hash"])
+    ws["last_block"] = max(ws["last_block"], max_block, seen_before)
 
 
 def main():
@@ -217,6 +326,7 @@ def main():
     state = migrate(load_state())
     state.setdefault("day", "")
     state.setdefault("wallets", {})
+    state.setdefault("contracts", {})
     before = json.dumps(state, sort_keys=True)
 
     now = datetime.now(KST)
@@ -228,7 +338,10 @@ def main():
             addr = cfg["address"].lower()
             if addr not in state["wallets"]:
                 try:
-                    state["wallets"][addr] = new_wallet_state(addr, now.strftime("%d/%m/%Y"))
+                    ws = new_wallet_state(addr, now.strftime("%d/%m/%Y"))
+                    if cfg.get("rescan_from"):
+                        ws["rescan_done"] = cfg["rescan_from"]  # vi moi: khong quet lai
+                    state["wallets"][addr] = ws
                 except Exception as e:
                     print(f"LOI khoi tao [{cfg['name']}]:", e)
 
@@ -264,7 +377,7 @@ def main():
             if not ws:
                 continue
             try:
-                check_wallet(cfg, ws)
+                check_wallet(cfg, ws, state["contracts"])
             except Exception as e:
                 print(f"LOI [{cfg['name']}]:", e)
     except Exception as e:
