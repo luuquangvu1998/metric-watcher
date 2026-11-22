@@ -1,18 +1,18 @@
 {
-  "day": "2026-11-22",
+  "day": "2026-11-23",
   "wallets": {
     "0x25cc275cfe3cce1700e816e00d4cd1f60872038a": {
-      "last_block": 120604827,
+      "last_block": 120824236,
       "total_count": 64,
       "total_volume": 218929.57,
       "since": "23/10/2026",
-      "day_count": 10,
-      "day_volume": 57060.12,
+      "day_count": 0,
+      "day_volume": 0.0,
       "started": true,
       "rescan_done": 108361076
     },
     "0xfa68ac3fd61396f478135d0018eb19c9b9ccd1dc": {
-      "last_block": 120604854,
+      "last_block": 120824236,
       "total_count": 5,
       "total_volume": 11927.14,
       "since": "10/11/2026",
