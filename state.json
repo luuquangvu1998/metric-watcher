@@ -2,17 +2,17 @@
   "day": "2026-11-24",
   "wallets": {
     "0x25cc275cfe3cce1700e816e00d4cd1f60872038a": {
-      "last_block": 121901740,
-      "total_count": 75,
-      "total_volume": 281254.41,
+      "last_block": 122239835,
+      "total_count": 78,
+      "total_volume": 297413.33,
       "since": "23/10/2026",
-      "day_count": 3,
-      "day_volume": 16892.77,
+      "day_count": 6,
+      "day_volume": 33051.69,
       "started": true,
       "rescan_done": 108361076
     },
     "0xfa68ac3fd61396f478135d0018eb19c9b9ccd1dc": {
-      "last_block": 121901858,
+      "last_block": 122239866,
       "total_count": 5,
       "total_volume": 11927.14,
       "since": "10/11/2026",
@@ -22,7 +22,7 @@
       "rescan_done": 110000000
     },
     "0xfa68ac3fd61396f478135d0018eb19c9b9ccd1dc@ethereum": {
-      "last_block": 26482094,
+      "last_block": 26485159,
       "total_count": 4,
       "total_volume": 23102.29,
       "since": "10/11/2026",
